@@ -1,0 +1,52 @@
+{
+  "best_model": "Random Forest",
+  "results": {
+    "Decision Tree": {
+      "accuracy": 0.7433333333333333,
+      "precision": 0.6598837209302325,
+      "recall": 0.5430622009569378,
+      "f1": 0.5958005249343832,
+      "roc_auc": 0.7819127130777421,
+      "brier": 0.17656925634748005,
+      "confusion_matrix": [
+        [
+          665,
+          117
+        ],
+        [
+          191,
+          227
+        ]
+      ],
+      "best_params": {
+        "max_depth": 8,
+        "min_samples_leaf": 30
+      },
+      "cv_f1": 0.5867102016830993
+    },
+    "Random Forest": {
+      "accuracy": 0.7541666666666667,
+      "precision": 0.7016393442622951,
+      "recall": 0.5119617224880383,
+      "f1": 0.5919778699861687,
+      "roc_auc": 0.7982507128085268,
+      "brier": 0.16847723482421476,
+      "confusion_matrix": [
+        [
+          691,
+          91
+        ],
+        [
+          204,
+          214
+        ]
+      ],
+      "best_params": {
+        "max_depth": null,
+        "min_samples_leaf": 5,
+        "n_estimators": 100
+      },
+      "cv_f1": 0.6130323473846759
+    }
+  }
+}
