@@ -127,7 +127,7 @@ def build_map(graph: nx.DiGraph, route: Optional[SearchResult] = None,
     lats = [d["y"] for _, d in graph.nodes(data=True)]
     lons = [d["x"] for _, d in graph.nodes(data=True)]
     fmap = folium.Map(location=[sum(lats) / len(lats), sum(lons) / len(lons)],
-                      zoom_start=zoom, tiles="cartodbpositron")
+                      zoom_start=zoom, tiles="OpenStreetMap")
 
     _add_roads(graph, fmap)
     if baseline is not None:
@@ -170,7 +170,7 @@ def main() -> None:
     try:
         graph = load_osm_graph()
         rivers = fetch_river_lines()
-    except RuntimeError as exc:
+    except (RuntimeError, ValueError) as exc:
         logger.warning("%s -- falling back to the synthetic grid graph.", exc)
         graph, rivers = build_grid_graph(), None
 

@@ -1,38 +1,82 @@
 """Streamlit dashboard for FloodGuard Lite.
 
 The interface is split into four pages to mirror the project specification:
-Home, Flood Prediction, Route Planner and Analytics. The pages consume the
-same ML model and graph-routing modules used elsewhere in the project so that
-all behaviour is consistent with the training and routing phases.
+Home, Flood Prediction, Route Planner and Analytics. The pages use the same
+ML model and graph-routing modules as the rest of the project, so behaviour
+is identical to the training and routing phases.
+
+Performance note: Streamlit re-runs this whole script on every interaction.
+The road network, the trained model and the shelter list never change during
+a session, so they are loaded once with ``st.cache_resource`` and every
+scenario works on a private copy of the cached graph.
 """
 from __future__ import annotations
 
 import json
 import logging
+import random
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Optional
 
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import networkx as nx
 import pandas as pd
 import streamlit as st
-from streamlit_folium import folium_static
+from matplotlib.figure import Figure
+from streamlit_folium import st_folium
 
-from dashboard.map_builder import build_map
-from routing.algorithms import astar, compare_algorithms, dijkstra
+from dashboard.map_builder import build_map, risk_class
+from routing.algorithms import (NoRouteError, SearchResult, astar,
+                                compare_algorithms)
 from routing.cost import apply_costs
-from routing.graph_builder import attach_static_features, build_grid_graph, fetch_river_lines, load_osm_graph
+from routing.graph_builder import (attach_static_features, build_grid_graph,
+                                   fetch_river_lines, load_osm_graph)
 from routing.risk import assign_flood_risk, load_model_bundle
-from routing.shelters import find_shelters, route_to_best_shelter
-from utils.config import DEFAULT_FLOOD_WEIGHT, METRICS_PATH, ROAD_TYPES, VALID_RANGES
+from routing.shelters import find_shelters, node_elevation, route_to_best_shelter
+from utils.config import (DEFAULT_FLOOD_WEIGHT, METRICS_PATH, RANDOM_SEED,
+                          ROAD_TYPES, VALID_RANGES)
 from utils.features import build_features
 
 logger = logging.getLogger(__name__)
 
+RISK_LABELS: Dict[str, str] = {
+    "safe": "Safe", "moderate": "Moderate risk", "flooded": "High flood risk"}
+MAX_FLOOD_WEIGHT: float = 25.0
+BENCHMARK_PAIRS: int = 15
 
-def load_metrics(path: Path = METRICS_PATH) -> Dict[str, object]:
+
+# --------------------------------------------------------------------------
+# Cached resources and data helpers
+# --------------------------------------------------------------------------
+@st.cache_resource(show_spinner="Loading road network...")
+def get_base_graph() -> nx.DiGraph:
+    """Load the road graph with static features (once per server session).
+
+    Falls back to the synthetic grid so the dashboard works offline.
+    Callers must ``copy()`` the result before modifying it.
+    """
+    try:
+        graph = load_osm_graph()
+        rivers = fetch_river_lines()
+    except (RuntimeError, ValueError) as exc:
+        logger.warning("Using synthetic grid graph (%s)", exc)
+        graph, rivers = build_grid_graph(), None
+    attach_static_features(graph, rivers)
+    return graph
+
+
+@st.cache_resource(show_spinner=False)
+def get_model_bundle() -> Dict[str, Any]:
+    """Load the trained model bundle once per server session."""
+    return load_model_bundle()
+
+
+@st.cache_resource(show_spinner=False)
+def get_shelters() -> List[int]:
+    """Choose shelters once; they depend only on static road features."""
+    return find_shelters(get_base_graph())
+
+
+def load_metrics(path: Path = METRICS_PATH) -> Dict[str, Any]:
     """Load saved training metrics or return an empty structure."""
     if not path.exists():
         return {"best_model": "Unavailable", "results": {}}
@@ -42,36 +86,77 @@ def load_metrics(path: Path = METRICS_PATH) -> Dict[str, object]:
 
 def build_scenario_graph(rainfall_mm: float, river_level_m: float,
                          flood_weight: float = DEFAULT_FLOOD_WEIGHT) -> nx.DiGraph:
-    """Create a scenario graph with ML risk assigned and road costs applied.
-
-    The function tries the real OSM-backed graph first, but falls back to the
-    synthetic grid graph so the dashboard still works in offline class/demo
-    environments.
-    """
-    try:
-        graph = load_osm_graph()
-        rivers = fetch_river_lines()
-    except (RuntimeError, ValueError):
-        graph = build_grid_graph()
-        rivers = None
-
-    attach_static_features(graph, rivers)
-    bundle = load_model_bundle()
-    assign_flood_risk(graph, rainfall_mm, river_level_m, bundle)
+    """Return a private graph copy with ML flood risk and road costs applied."""
+    graph = get_base_graph().copy()
+    assign_flood_risk(graph, rainfall_mm, river_level_m, get_model_bundle())
     apply_costs(graph, flood_weight)
     return graph
 
 
-def _node_labels(graph: nx.DiGraph) -> List[Tuple[str, int]]:
-    """Build readable node labels for selectboxes."""
-    labels: List[Tuple[str, int]] = []
-    for node in sorted(graph.nodes()):
-        x = float(graph.nodes[node]["x"])
-        y = float(graph.nodes[node]["y"])
-        labels.append((f"Node {node}  ({y:.4f}, {x:.4f})", node))
-    return labels
+def _node_label(graph: nx.DiGraph, node: int) -> str:
+    """Readable selectbox label for one intersection."""
+    return f"Node {node}  ({graph.nodes[node]['y']:.4f}, {graph.nodes[node]['x']:.4f})"
 
 
+def _require_model() -> bool:
+    """Show a friendly error and return False if the model is missing."""
+    try:
+        get_model_bundle()
+    except FileNotFoundError as exc:
+        st.error(f"{exc}")
+        return False
+    return True
+
+
+def compute_route_result(rainfall_mm: float, river_level_m: float, flood_weight: float,
+                         start: int, destination: Optional[int]) -> Dict[str, Any]:
+    """Run the flood-aware search plus the plain shortest-distance baseline.
+
+    ``destination=None`` means "nearest (cheapest) shelter".
+
+    Raises:
+        NoRouteError: if no passable route exists.
+    """
+    graph = build_scenario_graph(rainfall_mm, river_level_m, flood_weight)
+    shelters = get_shelters()
+    if destination is None:
+        route = route_to_best_shelter(graph, start, shelters)
+    else:
+        route = astar(graph, start, destination)
+    target = route.path[-1]
+    apply_costs(graph, 0.0)            # private copy: switch to plain distance
+    baseline = astar(graph, start, target)
+    return {"graph": graph, "route": route, "baseline": baseline, "start": start,
+            "destination": target, "shelters": shelters, "weight": flood_weight}
+
+
+@st.cache_data(show_spinner="Benchmarking Dijkstra and A* ...")
+def algorithm_benchmark(rainfall_mm: float, river_level_m: float, flood_weight: float,
+                        pairs: int = BENCHMARK_PAIRS) -> pd.DataFrame:
+    """Average both algorithms over several random start/destination pairs."""
+    graph = build_scenario_graph(rainfall_mm, river_level_m, flood_weight)
+    rng = random.Random(RANDOM_SEED)
+    nodes = list(graph.nodes)
+    rows: List[Dict[str, Any]] = []
+    for _ in range(pairs):
+        src, dst = rng.sample(nodes, 2)
+        try:
+            for result in compare_algorithms(graph, src, dst, repeats=3):
+                rows.append({"Algorithm": result.algorithm, "Cost": result.cost,
+                             "Distance (km)": result.distance_m / 1000,
+                             "Mean risk": result.mean_risk,
+                             "Nodes visited": result.nodes_visited,
+                             "Runtime (ms)": result.runtime_s * 1000})
+        except NoRouteError:
+            continue
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows).groupby("Algorithm", sort=False).mean().round(3).reset_index()
+
+
+# --------------------------------------------------------------------------
+# Pages
+# --------------------------------------------------------------------------
 def render_home() -> None:
     """Explain the project and how the AI + routing system fits together."""
     st.title("FloodGuard Lite")
@@ -123,21 +208,19 @@ def render_prediction() -> None:
     """Predict flood probability for a road segment using the trained model."""
     st.title("Flood Prediction")
     st.caption("Enter a road scenario and estimate flood probability for that segment.")
+    if not _require_model():
+        return
+
+    def slider(label: str, key: str, default: float, step: float) -> float:
+        low, high = VALID_RANGES[key]
+        return st.slider(label, min_value=low, max_value=high, value=default, step=step)
 
     with st.form("prediction_form"):
-        rainfall_mm = st.slider("Rainfall (mm)", min_value=0.0, max_value=400.0, value=180.0, step=5.0)
-        river_level_m = st.slider("River level (m)", min_value=0.0, max_value=8.0, value=3.5, step=0.1)
-        elevation_m = st.slider("Elevation (m)", min_value=0.0, max_value=25.0, value=8.0, step=0.5)
-        distance_from_river_m = st.slider(
-            "Distance from river (m)", min_value=0.0, max_value=5000.0, value=1200.0, step=50.0
-        )
-        historical_flood_freq = st.slider(
-            "Historical flood frequency",
-            min_value=0.0,
-            max_value=10.0,
-            value=3.0,
-            step=0.1,
-        )
+        rainfall_mm = slider("Rainfall (mm)", "rainfall_mm", 180.0, 5.0)
+        river_level_m = slider("River level (m)", "river_level_m", 3.5, 0.1)
+        elevation_m = slider("Elevation (m)", "elevation_m", 8.0, 0.5)
+        distance_m = slider("Distance from river (m)", "distance_from_river_m", 1200.0, 50.0)
+        history = slider("Historical flood frequency", "historical_flood_freq", 3.0, 0.1)
         road_type = st.selectbox("Road type", options=ROAD_TYPES)
         submitted = st.form_submit_button("Predict Flood")
 
@@ -145,96 +228,120 @@ def render_prediction() -> None:
         st.info("Choose the conditions and click Predict Flood to compute a score.")
         return
 
-    row = pd.DataFrame(
-        [{
-            "rainfall_mm": rainfall_mm,
-            "river_level_m": river_level_m,
-            "elevation_m": elevation_m,
-            "distance_from_river_m": distance_from_river_m,
-            "historical_flood_freq": historical_flood_freq,
-            "road_type": road_type,
-        }]
-    )
-
+    row = pd.DataFrame([{
+        "rainfall_mm": rainfall_mm, "river_level_m": river_level_m,
+        "elevation_m": elevation_m, "distance_from_river_m": distance_m,
+        "historical_flood_freq": history, "road_type": road_type}])
     try:
-        bundle = load_model_bundle()
-        features = build_features(row)
-        probability = float(bundle["model"].predict_proba(features[bundle["feature_columns"]])[0, 1])
-    except (FileNotFoundError, ValueError) as exc:
+        bundle = get_model_bundle()
+        features = build_features(row)[bundle["feature_columns"]]
+        probability = float(bundle["model"].predict_proba(features)[0, 1])
+    except ValueError as exc:
         st.error(f"Prediction could not run: {exc}")
         return
 
     st.markdown(f"### Flood probability: {probability:.2%}")
     st.progress(min(1.0, max(0.0, probability)))
-
-    if probability < 0.3:
-        status = "Safe"
-    elif probability < 0.7:
-        status = "Moderate risk"
-    else:
-        status = "High flood risk"
-    st.success(status)
-
-    st.write("The probability is interpreted as the chance that this road segment will flood under the given conditions.")
+    label = RISK_LABELS[risk_class(probability)]
+    (st.success if label == "Safe" else st.warning if label == "Moderate risk" else st.error)(label)
+    st.write("The probability is interpreted as the chance that this road segment "
+             "will flood under the given conditions.")
 
 
-def render_route_planner() -> None:
-    """Let the user select a route and view the safe evacuation map."""
-    st.title("Route Planner")
-
-    rainfall_mm = st.slider("Rainfall (mm)", min_value=0.0, max_value=400.0, value=200.0, step=5.0)
-    river_level_m = st.slider("River level (m)", min_value=0.0, max_value=8.0, value=4.0, step=0.1)
-    flood_weight = st.slider("Flood risk weight", min_value=0.0, max_value=25.0, value=DEFAULT_FLOOD_WEIGHT, step=0.5)
-
-    graph = build_scenario_graph(rainfall_mm, river_level_m, flood_weight)
-    shelters = find_shelters(graph)
-    node_labels = _node_labels(graph)
-
-    start_choice = st.selectbox(
-        "Start node",
-        options=node_labels,
-        format_func=lambda item: item[0],
-        index=0,
-    )
-    end_choice = st.selectbox(
-        "Destination node",
-        options=node_labels,
-        format_func=lambda item: item[0],
-        index=len(node_labels) - 1,
-    )
-    start_node = start_choice[1]
-    end_node = end_choice[1]
-
-    if start_node == end_node:
-        st.warning("Start and destination are the same node. Choose a different destination.")
-        return
-
-    with st.spinner("Computing the safest evacuation path..."):
-        route_graph = graph.copy()
-        apply_costs(route_graph, flood_weight)
-        route = astar(route_graph, start_node, end_node)
-
-        baseline_graph = graph.copy()
-        apply_costs(baseline_graph, 0.0)
-        baseline = dijkstra(baseline_graph, start_node, end_node)
+def _show_route_result(result: Dict[str, Any]) -> None:
+    """Display metrics, a comparison table and the map for a computed route."""
+    route: SearchResult = result["route"]
+    baseline: SearchResult = result["baseline"]
+    if len(route.path) < 2:
+        st.info("The start is already a shelter, so no travel is needed.")
+    extra = (route.distance_m / baseline.distance_m - 1.0) if baseline.distance_m else 0.0
 
     st.subheader("Route summary")
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Recommended route", f"{route.distance_m / 1000:.2f} km")
-    col2.metric("Mean risk", f"{route.mean_risk:.0%}")
-    col3.metric("A* nodes visited", f"{route.nodes_visited}")
-    col4.metric("Flood weight", f"{flood_weight:.1f}")
+    col1.metric("Recommended route", f"{route.distance_m / 1000:.2f} km", f"{extra:+.0%} vs shortest")
+    col2.metric("Mean risk", f"{route.mean_risk:.0%}",
+                f"{route.mean_risk - baseline.mean_risk:+.0%} vs shortest", delta_color="inverse")
+    col3.metric("Max risk on route", f"{route.max_risk:.0%}")
+    col4.metric("Flood weight", f"{result['weight']:.1f}")
 
     st.markdown("### Comparison with plain shortest-distance route")
-    st.write(
-        f"Shortest path: {baseline.distance_m / 1000:.2f} km | "
-        f"Mean risk: {baseline.mean_risk:.0%} | Nodes visited: {baseline.nodes_visited}"
-    )
+    st.dataframe(pd.DataFrame([
+        {"Route": "Recommended (flood-aware A*)", "Distance (km)": round(route.distance_m / 1000, 2),
+         "Mean risk": round(route.mean_risk, 3), "Max risk": round(route.max_risk, 3),
+         "Nodes visited": route.nodes_visited},
+        {"Route": "Shortest distance (A*)", "Distance (km)": round(baseline.distance_m / 1000, 2),
+         "Mean risk": round(baseline.mean_risk, 3), "Max risk": round(baseline.max_risk, 3),
+         "Nodes visited": baseline.nodes_visited},
+    ]), hide_index=True)
 
-    m = build_map(graph, route, baseline, start_node, end_node, shelters)
-    folium_static(m, width=1000, height=600)
+    fmap = build_map(result["graph"], route if len(route.path) > 1 else None,
+                     baseline if len(baseline.path) > 1 else None,
+                     result["start"], result["destination"], result["shelters"])
+    st_folium(fmap, height=600, use_container_width=True, returned_objects=[])
+    st.caption("Blue = recommended route, grey dashed = shortest-distance route. "
+               "Green/yellow/red roads show the risk level; purple markers are shelters.")
 
-    st.caption("Blue = recommended route, grey dashed = shortest-distance route. Green/yellow/red roads show the risk level.")
+
+def render_route_planner() -> None:
+    """Let the user choose a scenario and view the safest evacuation route."""
+    st.title("Route Planner")
+    if not _require_model():
+        return
+
+    graph = get_base_graph()
+    nodes = sorted(graph.nodes)
+    elevation = node_elevation(graph)
+    default_start = nodes.index(min(elevation, key=elevation.get))   # lowest-lying junction
+
+    with st.form("route_form"):
+        rain_lo, rain_hi = VALID_RANGES["rainfall_mm"]
+        river_lo, river_hi = VALID_RANGES["river_level_m"]
+        rainfall_mm = st.slider("Rainfall (mm)", rain_lo, rain_hi, 200.0, 5.0)
+        river_level_m = st.slider("River level (m)", river_lo, river_hi, 4.0, 0.1)
+        flood_weight = st.slider("Flood risk weight", 0.0, MAX_FLOOD_WEIGHT,
+                                 float(DEFAULT_FLOOD_WEIGHT), 0.5)
+        start_node = st.selectbox("Start node", options=nodes, index=default_start,
+                                  format_func=lambda n: _node_label(graph, n))
+        destination = st.selectbox(
+            "Destination", options=[None] + nodes, index=0,
+            format_func=lambda n: "Nearest shelter (automatic)" if n is None
+            else _node_label(graph, n))
+        submitted = st.form_submit_button("Compute Route")
+
+    if submitted:
+        if destination == start_node:
+            st.warning("Start and destination are the same node. Choose a different destination.")
+            st.session_state.pop("route_result", None)
+        else:
+            try:
+                with st.spinner("Computing the safest evacuation path..."):
+                    st.session_state["route_result"] = compute_route_result(
+                        rainfall_mm, river_level_m, flood_weight, start_node, destination)
+            except NoRouteError as exc:
+                st.session_state.pop("route_result", None)
+                st.error(f"No passable route: {exc}")
+
+    if "route_result" in st.session_state:
+        _show_route_result(st.session_state["route_result"])
+    else:
+        st.info("Choose a scenario and click Compute Route.")
+
+
+def _confusion_figure(name: str, matrix: List[List[int]]) -> Figure:
+    """Draw one confusion matrix (uses Figure directly: no global pyplot state)."""
+    fig = Figure(figsize=(3.2, 3.2))
+    ax = fig.subplots()
+    ax.imshow(matrix, cmap="Blues")
+    ax.set_xticks([0, 1], labels=["Safe", "Flooded"])
+    ax.set_yticks([0, 1], labels=["Safe", "Flooded"])
+    ax.set_xlabel("Predicted")
+    ax.set_ylabel("Actual")
+    ax.set_title(name)
+    for i in range(2):
+        for j in range(2):
+            ax.text(j, i, matrix[i][j], ha="center", va="center", color="black")
+    fig.tight_layout()
+    return fig
 
 
 def render_analytics() -> None:
@@ -247,57 +354,27 @@ def render_analytics() -> None:
         st.warning("No training metrics are available yet. Run the training pipeline first.")
         return
 
-    model_rows = []
-    for name, values in results.items():
-        model_rows.append(
-            {
-                "Model": name,
-                "Accuracy": values.get("accuracy", 0.0),
-                "Precision": values.get("precision", 0.0),
-                "Recall": values.get("recall", 0.0),
-                "F1": values.get("f1", 0.0),
-                "ROC AUC": values.get("roc_auc", 0.0),
-            }
-        )
-    df = pd.DataFrame(model_rows)
-    st.dataframe(df, use_container_width=True)
+    st.caption(f"Selected model: {metrics.get('best_model', 'n/a')}")
+    st.dataframe(pd.DataFrame([
+        {"Model": name, "Accuracy": v.get("accuracy", 0.0), "Precision": v.get("precision", 0.0),
+         "Recall": v.get("recall", 0.0), "F1": v.get("f1", 0.0), "ROC AUC": v.get("roc_auc", 0.0)}
+        for name, v in results.items()]), hide_index=True)
 
     st.subheader("Confusion matrices")
-    cols = st.columns(len(results))
-    for idx, (name, values) in enumerate(results.items()):
-        with cols[idx]:
-            cm = values.get("confusion_matrix", [[0, 0], [0, 0]])
-            fig, ax = plt.subplots(figsize=(3.2, 3.2))
-            ax.imshow(cm, cmap="Blues")
-            ax.set_xticks([0, 1])
-            ax.set_yticks([0, 1])
-            ax.set_xticklabels(["Safe", "Flooded"])
-            ax.set_yticklabels(["Safe", "Flooded"])
-            ax.set_title(name)
-            for i in range(2):
-                for j in range(2):
-                    ax.text(j, i, cm[i][j], ha="center", va="center", color="black")
-            fig.tight_layout()
-            st.pyplot(fig)
-            plt.close(fig)
+    for column, (name, values) in zip(st.columns(len(results)), results.items()):
+        with column:
+            st.pyplot(_confusion_figure(name, values.get("confusion_matrix", [[0, 0], [0, 0]])))
 
     st.subheader("Algorithm comparison")
-    graph = build_scenario_graph(rainfall_mm=200.0, river_level_m=4.0, flood_weight=DEFAULT_FLOOD_WEIGHT)
-    start = min(graph.nodes(), key=lambda n: graph.nodes[n]["y"])
-    destination = max(graph.nodes(), key=lambda n: graph.nodes[n]["y"])
-    comparisons = compare_algorithms(graph, start, destination, repeats=5)
-    comparison_rows = [
-        {
-            "Algorithm": result.algorithm,
-            "Cost": round(result.cost, 2),
-            "Distance (km)": round(result.distance_m / 1000, 2),
-            "Mean risk": round(result.mean_risk, 3),
-            "Nodes visited": result.nodes_visited,
-            "Runtime (s)": round(result.runtime_s, 6),
-        }
-        for result in comparisons
-    ]
-    st.dataframe(pd.DataFrame(comparison_rows), use_container_width=True)
+    if not _require_model():
+        return
+    table = algorithm_benchmark(200.0, 4.0, float(DEFAULT_FLOOD_WEIGHT))
+    if table.empty:
+        st.warning("No routable start/destination pairs were found for the benchmark.")
+    else:
+        st.caption(f"Average over up to {BENCHMARK_PAIRS} random start/destination pairs "
+                   "(scenario: 200 mm rain, 4 m river level).")
+        st.dataframe(table, hide_index=True)
 
     st.markdown(
         """
