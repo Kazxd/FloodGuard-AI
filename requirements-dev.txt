@@ -1,0 +1,5 @@
+# Extra tools for development and testing (not needed to run the app).
+# Install:  pip install -r requirements-dev.txt
+-r requirements.txt
+flake8>=7.0               # style check:  flake8 --max-line-length 110 .
+coverage>=7.4             # test coverage: coverage run -m unittest discover -s tests -t .
