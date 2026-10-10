@@ -13,7 +13,7 @@ import ast
 import logging
 import math
 from pathlib import Path
-from typing import Any, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import networkx as nx
 import numpy as np
@@ -172,39 +172,37 @@ def _distance_to_polyline(px: float, py: float, line: np.ndarray) -> float:
 def attach_static_features(graph: nx.DiGraph,
                            river_lines: Optional[Sequence[LonLatLine]] = None,
                            seed: int = RANDOM_SEED) -> None:
-    """Add elevation, river distance and historical flood frequency to edges.
-
-    Elevation and history are *synthetic* (no DEM is bundled): elevation rises
-    with distance from the river plus smooth undulation, and historical
-    frequency follows the same low/near-river pattern used to generate the
-    training data. Replace with SRTM/DEM data for real deployments.
-
-    If ``river_lines`` is None, a synthetic river is placed along the southern
-    boundary of the graph.
-    """
+    """Add elevation, river distance and historical flood frequency to edges."""
     xs = np.array([d["x"] for _, d in graph.nodes(data=True)])
     ys = np.array([d["y"] for _, d in graph.nodes(data=True)])
     lon0, lat0 = float(xs.mean()), float(ys.mean())
-
+ 
     if river_lines:
         lines = [np.column_stack(_to_local_m(*zip(*ln), lon0, lat0)) for ln in river_lines]
     else:
         south = (ys.min() - lat0) * 110_540.0
         west, east = _to_local_m(np.array([xs.min(), xs.max()]), np.array([lat0, lat0]), lon0, lat0)[0]
         lines = [np.array([[west, south], [east, south]])]
-
+ 
     rng = np.random.default_rng(seed)
+    # A road drawn in both directions is ONE physical road, so its features are
+    # computed once per undirected pair and shared by both directed edges.
+    computed: Dict[Tuple[int, int], Tuple[float, float, float]] = {}
     for u, v, data in graph.edges(data=True):
-        mx, my = _to_local_m((graph.nodes[u]["x"] + graph.nodes[v]["x"]) / 2,
-                             (graph.nodes[u]["y"] + graph.nodes[v]["y"]) / 2, lon0, lat0)
-        dist = min(_distance_to_polyline(float(mx), float(my), ln) for ln in lines)
-        elev = 5.0 + 0.004 * dist + 1.2 * math.sin(mx / 600) * math.cos(my / 700) \
-            + rng.normal(0, 0.3)
-        elev = float(np.clip(elev, 0.5, 25.0))
-        rate = float(np.clip(3.0 + 0.25 * (8.0 - elev) + 1.5 * math.exp(-dist / 500.0), 0.1, 9.0))
-        data["distance_from_river_m"] = float(np.clip(dist, 0.0, 5000.0))
-        data["elevation_m"] = elev
-        data["historical_flood_freq"] = float(min(rng.poisson(rate), 10))
+        key = (min(u, v), max(u, v))
+        if key not in computed:
+            mx, my = _to_local_m((graph.nodes[u]["x"] + graph.nodes[v]["x"]) / 2,
+                                 (graph.nodes[u]["y"] + graph.nodes[v]["y"]) / 2, lon0, lat0)
+            dist = min(_distance_to_polyline(float(mx), float(my), ln) for ln in lines)
+            elev = 5.0 + 0.004 * dist + 1.2 * math.sin(mx / 600) * math.cos(my / 700) \
+                + rng.normal(0, 0.3)
+            elev = float(np.clip(elev, 0.5, 25.0))
+            rate = float(np.clip(3.0 + 0.25 * (8.0 - elev)
+                                 + 1.5 * math.exp(-dist / 500.0), 0.1, 9.0))
+            computed[key] = (float(np.clip(dist, 0.0, 5000.0)), elev,
+                             float(min(rng.poisson(rate), 10)))
+        (data["distance_from_river_m"], data["elevation_m"],
+         data["historical_flood_freq"]) = computed[key]
 
 
 def nearest_node(graph: nx.DiGraph, lat: float, lon: float) -> int:
