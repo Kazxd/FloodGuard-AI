@@ -1,587 +1,218 @@
 # FloodGuard Lite
 
-AI-Based Flood Evacuation Route Planner
-
-FloodGuard Lite is a compact, local, proof-of-concept system for an AI class project. It combines machine learning and graph-based route planning to estimate flood risk on roads and recommend safer evacuation routes during simulated flood conditions.
-
-The goal is not to build a production disaster response platform. Instead, it demonstrates core AI and software engineering ideas in a small, understandable, and runnable project:
-
-- supervised learning for classification
-- feature engineering and evaluation
-- graph representation and shortest-path search
-- flood-aware cost functions
-- interactive map visualization
-- dashboard application with Streamlit
-
----
-
-## Table of Contents
-
-1. Project Overview
-2. Why This Project Exists
-3. Architecture Summary
-4. Repository Structure
-5. Environment Setup
-6. Installation
-7. Data and Model Workflow
-8. Running the Project
-9. Using the Dashboard
-10. Machine Learning Details
-11. Routing Details
-12. How Everything Connects
-13. Troubleshooting
-14. Future Improvements
-
----
-
-## 1. Project Overview
-
-FloodGuard Lite models a small road network and predicts whether each road is likely to flood under a given scenario. It uses environmental input such as:
-
-- rainfall
-- river level
-- elevation
-- distance from river
-- road type
-- historical flood frequency
-
-The system then:
-
-1. scores each road segment with a flood probability
-2. assigns a cost to each road using both distance and flood risk
-3. computes the safest route to a shelter or destination
-4. renders the result on an interactive Folium map
-
-This is a practical AI demonstration where prediction and decision-making are both included in the same pipeline.
-
----
-
-## 2. Why This Project Exists
-
-This project is designed as a teaching project for learning:
-
-- machine learning concepts
-- supervised classification
-- probability estimation
-- model evaluation
-- graph representation in routing
-- heuristic search and shortest path algorithms
-- decision support with visualization
-
-The system intentionally uses a small area, not a citywide or national system. The aim is educational clarity rather than operational realism.
-
----
-
-## 3. Architecture Summary
-
-The project has two major pillars:
-
-### A. Machine learning pillar
-
-Data is converted into engineered features, then a classifier predicts the probability that a road segment floods. The project compares:
-
-- Decision Tree
-- Random Forest
-
-The training code evaluates:
-
-- accuracy
-- precision
-- recall
-- F1 score
-- confusion matrix
-
-### B. Routing pillar
-
-The road network is represented as a graph:
-
-- nodes = intersections
-- edges = roads
-- edge attributes = distance, road type, flood probability, and cost
-
-Then route search is performed using:
-
-- Dijkstra
-- A*
-
-A* usually performs fewer node expansions because it uses directionality toward the destination.
-
----
-
-## 4. Repository Structure
-
-```text
-FloodGuard/
-├── dashboard/
-│   ├── __init__.py
-│   ├── map_builder.py
-│   └── streamlit_app.py
-├── data/
-│   ├── __init__.py
-│   ├── generate_dataset.py
-│   └── processed/
-│       └── velachery.graphml
-├── models/
-│   ├── __init__.py
-│   ├── flood_model.joblib
-│   └── train_model.py
-├── reports/
-│   ├── demo_map.html
-│   ├── figures/
-│   └── metrics.json
-├── routing/
-│   ├── __init__.py
-│   ├── algorithms.py
-│   ├── cost.py
-│   ├── graph_builder.py
-│   ├── risk.py
-│   └── shelters.py
-├── tests/
-│   ├── __init__.py
-│   ├── test_phase4.py
-│   └── test_routing.py
-├── utils/
-│   ├── __init__.py
-│   ├── config.py
-│   └── features.py
-├── .gitignore
-├── requirements.txt
-├── main.py
-├── README.md
-└── assets/
-```
-
----
-
-## 5. Environment Setup
-
-### Prerequisites
-
-You need:
-
-- Python 3.10 or 3.12
-- Git
-- a local terminal
-- internet access for fetching the OSM graph on first run
-
-### Create a virtual environment
-
-```bash
-cd /path/to/FloodGuard
-python3 -m venv .venv
-source .venv/bin/activate
-```
-
-On Windows PowerShell:
-
-```powershell
-cd C:\path\to\FloodGuard
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-```
-
----
-
-## 6. Installation
-
-Install the required Python dependencies:
-
-```bash
-pip install -r requirements.txt
-```
-
-The project dependencies include:
-
-- pandas
-- numpy
-- scikit-learn
-- matplotlib
-- joblib
-- networkx
-- osmnx
-- folium
-- streamlit
-- streamlit-folium
-
-If you want to check the dependency list directly, look in [requirements.txt](requirements.txt).
-
----
-
-## 7. Data and Model Workflow
-
-### Step 1: Generate or prepare data
-
-The project includes a synthetic data generator and a processed graph. You can generate the dataset using:
-
-```bash
-python -m data.generate_dataset
-```
-
-This creates the road-segment dataset used by the training pipeline.
-
-### Step 2: Train the model
-
-```bash
-python -m models.train_model
-```
-
-This does the following:
-
-- loads training data
-- drops invalid or duplicated rows
-- performs feature engineering
-- splits into train/test sets
-- tunes Decision Tree and Random Forest models
-- evaluates on accuracy, precision, recall, F1, and ROC AUC
-- saves the best model to `models/flood_model.joblib`
-- saves evaluation metrics to `reports/metrics.json`
-
-### Step 3: Build a demo route map
-
-```bash
-python -m dashboard.map_builder
-```
-
-This creates the demo Folium HTML file in:
-
-```text
-reports/demo_map.html
-```
-
----
-
-## 8. Running the Project
-
-### Run the Streamlit app
-
-From the repository root:
-
-```bash
-streamlit run main.py
-```
-
-Then open the local URL shown in the terminal.
-
-### Run the map builder directly
-
-```bash
-python -m dashboard.map_builder
-```
-
-This is useful for generating the map without the dashboard.
-
-### Run the tests
-
-```bash
-python -m unittest tests.test_routing -v
-python -m unittest tests.test_phase4 -v
-```
-
-Or run both together:
-
-```bash
-python -m unittest tests.test_routing tests.test_phase4 -v
-```
-
----
-
-## 9. Using the Dashboard
-
-The app has four pages:
-
-### Home
-
-- explains the project idea
-- gives a conceptual overview
-- introduces the machine learning and routing pipeline
-
-### Flood Prediction
-
-This page lets the user input:
-
-- rainfall
-- river level
-- elevation
-- distance from river
-- historical flood frequency
-- road type
-
-Then it predicts flood probability for a road segment.
-
-### Route Planner
-
-This page allows the user to:
-
-- choose a start node
-- choose a destination node
-- define rainfall and river level for the scenario
-- set the flood-risk weight
-
-The system then:
-
-- computes flood probability on the graph
-- applies flood-aware costs
-- runs A* for the safest route
-- compares against a plain distance-based route
-- displays the results on an interactive map
-
-### Analytics
-
-This page shows:
-
-- model evaluation table
-- confusion matrix plots
-- algorithm comparison metrics
-
----
-
-## 10. Machine Learning Details
-
-### Why Decision Tree and Random Forest?
-
-These algorithms were chosen because they are:
-
-- easy to explain
-- good for small tabular datasets
-- naturally suited to structured environmental features
-- effective for classification tasks like flood risk prediction
-
-### Decision Tree advantages
-
-- easy to visualize
-- interpretable
-- fast to train
-
-### Decision Tree disadvantages
-
-- may overfit
-- can be unstable on noisy data
-
-### Random Forest advantages
-
-- more robust than a single tree
-- reduces variance
-- handles non-linear relationships better
-
-### Random Forest disadvantages
-
-- less interpretable than a single decision tree
-- training is a bit heavier computationally
-
-### Model features
-
-The model uses a feature vector that includes:
-
-- rainfall_mm
-- river_level_m
-- elevation_m
-- distance_from_river_m
-- historical_flood_freq
-- engineered features like river exposure and proximity
-- one-hot encoded road type fields
-
-### Output
-
-The final prediction is a probability in the range:
-
-```text
-0.0 to 1.0
-```
-
-A value closer to 1 means the road is more likely to flood.
-
----
-
-## 11. Routing Details
-
-The graph is built from a road network where:
-
-- nodes = intersections
-- edges = road segments
-- weight = cost of traversing a road
-
-The cost function combines:
-
-- distance
-- flood probability
-- configurable flood weight
-
-The project uses the following logic conceptually:
-
-```text
-Cost = distance + flood_weight × flood_risk
-```
-
-This makes the route planner prefer routes that are safer, even if they are slightly longer.
-
-### Dijkstra
-
-Dijkstra guarantees the shortest path when the cost function is non-negative. It is dependable and mathematically sound.
-
-### A*
-
-A* adds a heuristic estimate of the remaining distance to the destination. This helps the algorithm focus on promising routes instead of exploring all possible nodes.
-
-### Why A* usually performs better here
-
-A* often expands fewer nodes than Dijkstra because it uses directional guidance toward the destination. In road networks, that can save a lot of computation while still finding an optimal route when the heuristic remains admissible.
-
----
-
-## 12. How Everything Connects
-
-Below is the project pipeline in flowchart form:
-
-```mermaid
-flowchart TD
-    A[User inputs rainfall, river level, road conditions] --> B[Feature Engineering]
-    B --> C[Decision Tree / Random Forest Model]
-    C --> D[Flood Probability per Road]
-    D --> E[Graph Cost Assignment]
-    E --> F[Dijkstra or A* route search]
-    F --> G[Safe evacuation route]
-    G --> H[Folium map with route + risk colors]
-    H --> I[Streamlit dashboard]
-```
-
-This shows the full decision-making loop:
-
-- model predicts risk
-- risk affects travel cost
-- routing selects the best evacuation route
-- UI shows the answer visually
-
----
-
-## 13. Data Flow
+**AI-based flood evacuation route planner** (Artificial Intelligence course project)
+
+FloodGuard Lite is a small, fully local prototype. A supervised machine-learning
+model predicts how likely every road in a neighbourhood is to flood, and a graph
+search algorithm (A\* or Dijkstra) then finds the evacuation route that best
+balances **short distance** against **low flood risk**. The result is shown on an
+interactive map inside a four-page Streamlit app.
+
+> **Scope.** This is a proof of concept for learning, not a disaster-management
+> system. It simulates one small area (Velachery, Chennai), uses no live data,
+> and runs entirely on your own computer.
+
+## What it demonstrates
+
+| AI concept | Where |
+|---|---|
+| Supervised learning (Decision Tree vs Random Forest) | `models/train_model.py` |
+| Feature engineering, evaluation, confusion matrix | `utils/features.py`, `reports/` |
+| Graph representation of a road network | `routing/graph_builder.py` |
+| Search algorithms (Dijkstra and A\*) and cost design | `routing/algorithms.py`, `routing/cost.py` |
+| Decision making under risk | `routing/shelters.py` |
+| Interactive visualisation | `dashboard/map_builder.py`, `dashboard/streamlit_app.py` |
+
+## How it works
 
 ```mermaid
 flowchart LR
-    A[Raw road data / OSM graph] --> B[Clean + engineer features]
-    B --> C[Train/Test split]
-    C --> D[Decision Tree model]
-    C --> E[Random Forest model]
-    D --> F[Metric evaluation]
-    E --> F
-    F --> G[Choose best model]
-    G --> H[Save model + metrics]
-    H --> I[Use model in route planner]
+    A["Synthetic dataset<br/>data/generate_dataset.py"] --> B["Cleaning and<br/>feature engineering"]
+    B --> C["Decision Tree vs<br/>Random Forest"]
+    C --> D[("Saved model<br/>flood_model.joblib")]
+
+    E["OpenStreetMap<br/>Velachery roads"] --> F["NetworkX graph<br/>nodes = junctions<br/>edges = roads"]
+    F --> G["Static road features<br/>elevation, river distance,<br/>flood history"]
+
+    H["User scenario<br/>rainfall + river level"] --> I["Predict flood probability<br/>for every road"]
+    D --> I
+    G --> I
+    I --> J["Edge cost =<br/>length x (1 + weight x risk)"]
+    J --> K["A* / Dijkstra<br/>route search"]
+    K --> L["Folium map<br/>routes + shelters"]
+    L --> M["Streamlit dashboard<br/>Home, Prediction,<br/>Route Planner, Analytics"]
 ```
 
-This is the structure used for the AI training loop.
+1. **Predict.** For each road the model estimates a flood probability (0.0 to 1.0)
+   from rainfall, river level, elevation, distance from the river, historical
+   flood frequency and road type.
+2. **Weigh.** Each road gets a cost that grows with its flood risk:
+   `cost = length x (1 + weight x risk)`. With `weight = 0` this is plain
+   distance; a larger weight makes the planner avoid risky roads more strongly.
+   (The additive form `length + weight x risk` is also available in
+   `routing/cost.py`.)
+3. **Search.** A\* finds the least-cost route. A straight-line-distance heuristic
+   never overestimates, because every road costs at least its length, so A\*
+   returns the same optimal cost as Dijkstra while visiting fewer nodes.
+4. **Show.** The map draws roads green (safe, below 30 %), yellow (moderate) and
+   red (flooded, 70 % or more), the recommended route in blue, the plain
+   shortest route as a grey dashed line, and purple markers for shelters.
 
----
+## Installation
 
-## 14. System Workflow
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant Dashboard
-    participant MLModel
-    participant GraphEngine
-    participant Map
-
-    User->>Dashboard: enters rainfall and river level
-    Dashboard->>MLModel: predict flood probability
-    MLModel-->>Dashboard: probability score
-    Dashboard->>GraphEngine: assign risk to roads
-    GraphEngine->>GraphEngine: compute road costs
-    GraphEngine->>GraphEngine: run A* / Dijkstra
-    GraphEngine-->>Dashboard: optimal path metrics
-    Dashboard->>Map: render risk-colored roads and route
-    Map-->>User: interactive evacuation map
-```
-
-This is the user-level interaction pattern.
-
----
-
-## 15. Typical Use Cases
-
-### Example 1: Predict a flood risk
-
-- open the Flood Prediction page
-- set rainfall to 180 mm and river level to 3.5 m
-- click Predict Flood
-- inspect the risk probability and classification output
-
-### Example 2: Compute an evacuation route
-
-- open Route Planner
-- choose start and destination nodes
-- adjust flood weight
-- click the route computation flow in the app
-- inspect the recommended route on the map
-
-### Example 3: Review model quality
-
-- open Analytics
-- compare Decision Tree and Random Forest metrics
-- inspect confusion matrices and algorithm performance
-
----
-
-## 16. Troubleshooting
-
-### Problem: missing package errors
-
-Run:
+Requirements: **Python 3.10 or newer** (tested on 3.12) and an internet
+connection for the first run (the road network is downloaded once and cached).
 
 ```bash
-pip install -r requirements.txt
+# 1. Get the code
+git clone https://github.com/Kazxd/FloodGuard-AI.git
+cd FloodGuard-AI
+
+# 2. Create and activate a virtual environment
+python -m venv .venv
+.venv\Scripts\Activate.ps1          # Windows PowerShell
+# source .venv/bin/activate         # macOS / Linux
+
+# 3. Install the libraries
+pip install -r requirements.txt     # or requirements-lock.txt for the exact tested versions
 ```
 
-### Problem: model file not found
-
-Train the model first:
+## Usage
 
 ```bash
+# 1. Generate the dataset          -> data/raw/road_segments.csv
+python -m data.generate_dataset
+
+# 2. Train and evaluate the models -> models/flood_model.joblib, reports/metrics.json, reports/figures/
 python -m models.train_model
+
+# 3. Launch the dashboard
+streamlit run main.py
 ```
 
-### Problem: route planner fails because graph data is unavailable
+Optional: `python -m dashboard.map_builder` writes a standalone demo map to
+`reports/demo_map.html`.
 
-The project gracefully falls back to a synthetic grid graph if the OSM dataset cannot be downloaded. This keeps the project usable in local or classroom environments.
+### The four dashboard pages
 
-### Problem: Folium shows a warning about tiles
+| Page | What you do |
+|---|---|
+| **Home** | Read the project overview and architecture. |
+| **Flood Prediction** | Enter rainfall, river level and road details, then click *Predict Flood* to see the flood probability. |
+| **Route Planner** | Set rainfall, river level and the flood weight, choose a start and a destination (or the nearest shelter), then click *Compute Route*. |
+| **Analytics** | See model accuracy, precision, recall, F1, confusion matrices and the Dijkstra vs A\* comparison. |
 
-This warning is usually non-fatal. The map still renders. It may be caused by CartoDB basemap licensing changes, but the app remains functional for demonstration purposes.
+## Dataset
 
-### Problem: Streamlit does not open locally
+No public dataset has flood labels for individual roads with these features, so
+`data/generate_dataset.py` creates a **synthetic** one of 6,000 road/weather
+samples. Flood labels are drawn from a documented logistic equation (rainfall,
+river level near the river, flood history, low elevation and road type, plus
+random noise for unobserved factors such as blocked drains).
 
-Check the terminal output for the exact URL and port. It typically runs on:
+Because the labels are random draws, even a perfect model cannot reach 100 %.
+The file keeps the true probability in a `true_probability` column so the best
+achievable score is known; it is **never** given to the model as a feature.
+The machine-learning task therefore measures how well a model *learns this
+risk pattern*, not real-world flood accuracy.
 
-```text
-http://localhost:8501
+## Results
+
+Seed 42, 80/20 stratified split (1,200 test rows), scikit-learn 1.9.1:
+
+| Model | Accuracy | Precision | Recall | F1 | ROC AUC |
+|---|---|---|---|---|---|
+| Decision Tree | 0.743 | 0.660 | 0.543 | 0.596 | 0.782 |
+| **Random Forest** (selected) | **0.754** | 0.702 | 0.512 | 0.592 | **0.798** |
+| *Best possible (knows the true probability)* | *0.769* | | | *0.625* | *0.841* |
+
+The Random Forest reaches about 95 % of the best possible ROC AUC. It is selected by
+ROC AUC because the router uses probabilities, not yes/no labels. Recall is
+modest at the default 0.5 threshold; this is partly built into the noisy labels
+(even the best possible model scores only about 0.62 F1 there).
+Your own numbers are saved in `reports/metrics.json` after training and shown on
+the Analytics page.
+
+## Testing
+
+```bash
+python -m unittest discover -s tests -t . -v
 ```
 
----
+The tests cover data generation, cleaning, feature engineering, model
+evaluation, graph building, the cost function, Dijkstra/A\* (including the
+property that both return the same optimal cost), shelters, risk assignment,
+map output and every dashboard page (using Streamlit's headless `AppTest`).
+Tests that need the trained model are skipped until you run step 2 above.
 
-## 17. Future Scope
+For a style check and coverage, install the extras and run:
 
-The project can be extended in several ways:
+```bash
+pip install -r requirements-dev.txt
+flake8 --max-line-length 110 .
+coverage run -m unittest discover -s tests -t . && coverage report
+```
 
-- add real DEM data for elevation from a public source
-- integrate real flood and rainfall data
-- include actual shelter coordinates from OpenStreetMap
-- compare more algorithms such as XGBoost or logistic regression
-- add time-varying flood risk simulation
-- support multi-criteria route optimization with risk, distance, and time
+## Project structure
 
-This is a good academic prototype because it keeps the problem small, understandable, and open to extension.
+```
+FloodGuard-AI/
+├── data/
+│   ├── generate_dataset.py     synthetic dataset generator
+│   ├── raw/                    generated CSV
+│   └── processed/              cached road-network graph
+├── models/
+│   └── train_model.py          cleaning, tuning, evaluation, saving
+├── routing/
+│   ├── graph_builder.py        OSM road graph and static road features
+│   ├── risk.py                 ML flood probability for every road
+│   ├── cost.py                 distance + flood-risk edge cost
+│   ├── algorithms.py           Dijkstra, A*, benchmark helper
+│   └── shelters.py             shelter selection and nearest-shelter routing
+├── dashboard/
+│   ├── map_builder.py          Folium map
+│   └── streamlit_app.py        the four Streamlit pages
+├── utils/
+│   ├── config.py               every path, range and constant in one place
+│   └── features.py             feature engineering shared by training and prediction
+├── tests/                      unit, property and dashboard tests
+├── reports/                    metrics.json, figures, demo map
+├── main.py                     entry point: streamlit run main.py
+├── requirements.txt            runtime libraries (ranges)
+├── requirements-lock.txt       exact tested versions
+└── requirements-dev.txt        test and style tools
+```
 
----
+## Limitations
 
-## 18. Summary
+- **Synthetic labels.** Results show learnability of a known rule, not real flood prediction.
+- **Synthetic terrain features.** Elevation and flood history are generated, not read from a
+  digital elevation model or flood records.
+- **Straight road segments.** Roads are drawn as straight lines between junctions.
+- **Scenario inputs.** In training, river level rises with rainfall; the dashboard lets you set
+  them independently, so extreme combinations are extrapolations.
+- **One small area, no live data.** No weather feeds, sensors or traffic.
 
-FloodGuard Lite is a complete learning project that demonstrates how AI and routing work together in a practical scenario. The project uses:
+## Future scope
 
-- supervised classification for flood probability estimation
-- graph search for safe route planning
-- interactive visualization for explainability
-- a simple local dashboard for experimentation
+- Replace the synthetic data with real flood records and a digital elevation model.
+- Use live rainfall and river-gauge feeds.
+- Add traffic and road-closure information, and real shelters (schools, hospitals) from OpenStreetMap.
+- Compare more models and tune the decision threshold for higher recall.
+- Multi-objective routing (time, risk, capacity) and many-vehicle evacuation planning.
+- Deploy to the cloud with a mobile-friendly interface.
 
-It is intentionally modest, but it is designed to show the full technical workflow from data to decision-making.
+## Troubleshooting
 
-If you want to continue the project, the next logical step would be to add more realistic data, improve the training metrics, and compare more strategies for flood-risk estimation.
+| Problem | Fix |
+|---|---|
+| PowerShell says scripts are disabled | Run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, then activate the environment again. |
+| First route is slow or fails | The first run downloads the road network and needs internet. Without it, the app falls back to a synthetic grid. |
+| `InconsistentVersionWarning` about scikit-learn | The saved model was trained with a different version. Run `python -m models.train_model` again. |
+| "Model not found" message | Run steps 1 and 2 under *Usage* first. |
+| Port already in use | `streamlit run main.py --server.port 8502` |
+
+## Credits
+
+Road-network data and map tiles: © OpenStreetMap contributors (ODbL).
+Built with scikit-learn, NetworkX, OSMnx, Folium and Streamlit.
