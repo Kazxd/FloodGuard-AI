@@ -32,7 +32,7 @@ from routing.graph_builder import (attach_static_features, build_grid_graph,
                                    fetch_river_lines, load_osm_graph)
 from routing.risk import assign_flood_risk, load_model_bundle
 from routing.shelters import find_shelters, node_elevation, route_to_best_shelter
-from utils.config import (DEFAULT_FLOOD_WEIGHT, METRICS_PATH, RANDOM_SEED,
+from utils.config import (DEFAULT_FLOOD_WEIGHT, DEM_PATH, METRICS_PATH, RANDOM_SEED,
                           ROAD_TYPES, VALID_RANGES)
 from utils.features import build_features
 
@@ -60,7 +60,7 @@ def get_base_graph() -> nx.DiGraph:
     except (RuntimeError, ValueError) as exc:
         logger.warning("Using synthetic grid graph (%s)", exc)
         graph, rivers = build_grid_graph(), None
-    attach_static_features(graph, rivers)
+    attach_static_features(graph, rivers, dem_path=DEM_PATH if DEM_PATH.exists() else None)
     return graph
 
 

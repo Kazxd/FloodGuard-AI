@@ -23,7 +23,7 @@ from routing.graph_builder import (attach_static_features, build_grid_graph,
 from routing.risk import assign_flood_risk, load_model_bundle
 from routing.shelters import find_shelters, node_elevation, route_to_best_shelter
 from utils.config import (COLOR_FLOODED, COLOR_MODERATE, COLOR_ROUTE, COLOR_SAFE,
-                          DEFAULT_FLOOD_WEIGHT, REPORTS_DIR, RISK_FLOODED_MIN,
+                          DEFAULT_FLOOD_WEIGHT, DEM_PATH, REPORTS_DIR, RISK_FLOODED_MIN,
                           RISK_SAFE_MAX)
 
 logger = logging.getLogger(__name__)
@@ -174,7 +174,7 @@ def main() -> None:
         logger.warning("%s -- falling back to the synthetic grid graph.", exc)
         graph, rivers = build_grid_graph(), None
 
-    attach_static_features(graph, rivers)
+    attach_static_features(graph, rivers, dem_path=DEM_PATH if DEM_PATH.exists() else None)
     assign_flood_risk(graph, rainfall_mm=200.0, river_level_m=4.0,
                       bundle=load_model_bundle())
 

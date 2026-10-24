@@ -97,18 +97,34 @@ def load_osm_graph(place: str = PLACE_NAME, cache_path: Path = GRAPH_PATH) -> nx
     return simplify_to_digraph(multi)
 
 
-def fetch_river_lines(place: str = PLACE_NAME) -> Optional[List[List[Tuple[float, float]]]]:
-    """Fetch waterway geometries from OSM; return None if unavailable."""
+def fetch_river_lines(place: str = PLACE_NAME,
+                      buffer_m: float = 2000.0) -> Optional[List[List[Tuple[float, float]]]]:
+    """Fetch rivers, canals, drains, lakes and wetlands from OSM as polylines.
+
+    Water that lies just outside the place boundary (for example the
+    Pallikaranai marsh south of Velachery) still floods nearby roads, so the
+    search area is the boundary box widened by ``buffer_m`` metres. Lakes and
+    wetlands are polygons; their outline is used as the "river" line.
+    Returns None if nothing can be downloaded.
+    """
     try:
         import osmnx as ox
-        gdf = ox.features_from_place(
-            place, tags={"waterway": ["river", "canal", "stream", "drain"]})
+        west, south, east, north = [float(v) for v in ox.geocode_to_gdf(place).total_bounds]
+        margin = buffer_m / 111_000.0
+        gdf = ox.features_from_bbox(
+            bbox=(west - margin, south - margin, east + margin, north + margin),
+            tags={"waterway": ["river", "canal", "stream", "drain"],
+                  "natural": ["water", "wetland"]})
     except Exception as exc:
         logger.warning("Could not fetch waterways (%s); using synthetic river.", exc)
         return None
     lines: List[List[Tuple[float, float]]] = []
     for geom in gdf.geometry:
-        parts = list(geom.geoms) if geom.geom_type == "MultiLineString" else [geom]
+        if geom is None or geom.is_empty:
+            continue
+        if geom.geom_type in ("Polygon", "MultiPolygon"):
+            geom = geom.boundary                 # lake / wetland outline
+        parts = list(geom.geoms) if hasattr(geom, "geoms") else [geom]
         lines.extend([list(p.coords) for p in parts if p.geom_type == "LineString"])
     return lines or None
 
@@ -171,8 +187,20 @@ def _distance_to_polyline(px: float, py: float, line: np.ndarray) -> float:
 
 def attach_static_features(graph: nx.DiGraph,
                            river_lines: Optional[Sequence[LonLatLine]] = None,
-                           seed: int = RANDOM_SEED) -> None:
-    """Add elevation, river distance and historical flood frequency to edges."""
+                           seed: int = RANDOM_SEED,
+                           dem_path: Optional[Path] = None) -> None:
+    """Add elevation, river distance and historical flood frequency to edges.
+
+    If ``dem_path`` points to a DEM GeoTIFF (see ``routing/elevation.py``),
+    the elevation of each road is read from it at the road's midpoint.
+    Otherwise elevation is generated synthetically. Historical flood
+    frequency is always synthetic (it is derived from elevation and river
+    distance) because no public per-road flood record exists.
+    """
+    sampler = None
+    if dem_path is not None:
+        from routing.elevation import DemSampler  # lazy: needs rasterio
+        sampler = DemSampler(dem_path)
     xs = np.array([d["x"] for _, d in graph.nodes(data=True)])
     ys = np.array([d["y"] for _, d in graph.nodes(data=True)])
     lon0, lat0 = float(xs.mean()), float(ys.mean())
@@ -194,8 +222,14 @@ def attach_static_features(graph: nx.DiGraph,
             mx, my = _to_local_m((graph.nodes[u]["x"] + graph.nodes[v]["x"]) / 2,
                                  (graph.nodes[u]["y"] + graph.nodes[v]["y"]) / 2, lon0, lat0)
             dist = min(_distance_to_polyline(float(mx), float(my), ln) for ln in lines)
-            elev = 5.0 + 0.004 * dist + 1.2 * math.sin(mx / 600) * math.cos(my / 700) \
+            synthetic_elev = 5.0 + 0.004 * dist + 1.2 * math.sin(mx / 600) * math.cos(my / 700) \
                 + rng.normal(0, 0.3)
+            elev = synthetic_elev
+            if sampler is not None:
+                real = float(sampler.sample(
+                    [(graph.nodes[u]["x"] + graph.nodes[v]["x"]) / 2],
+                    [(graph.nodes[u]["y"] + graph.nodes[v]["y"]) / 2])[0])
+                elev = real if np.isfinite(real) else sampler.median
             elev = float(np.clip(elev, 0.5, 25.0))
             rate = float(np.clip(3.0 + 0.25 * (8.0 - elev)
                                  + 1.5 * math.exp(-dist / 500.0), 0.1, 9.0))

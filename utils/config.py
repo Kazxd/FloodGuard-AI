@@ -59,6 +59,8 @@ DECISION_THRESHOLD: float = 0.5
 
 # ---- Routing (Phase 3) ----
 GRAPH_PATH: Path = DATA_DIR / "processed" / "velachery.graphml"
+# Real terrain height model (created by: python -m routing.elevation)
+DEM_PATH: Path = DATA_DIR / "external" / "velachery_dem.tif"
 DEFAULT_FLOOD_WEIGHT: float = 5.0   # penalty strength for flood risk
 
 # ---- Map display (Phase 4) ----
