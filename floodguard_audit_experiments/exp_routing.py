@@ -23,7 +23,7 @@ from sklearn.linear_model import LogisticRegression
 
 from common import (OUT, REPO, SCENARIOS, build_graph, edge_table, flood_lines,
                     label_edges, score_rf)
-from alidation import geo_X
+from exp_validation import geo_X
 from routing.cost import apply_costs
 from routing.risk import load_model_bundle
 from routing.shelters import find_shelters, route_to_best_shelter

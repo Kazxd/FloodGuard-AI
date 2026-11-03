@@ -28,18 +28,29 @@ sys.path.insert(0, str(REPO))
 from routing.graph_builder import attach_static_features, simplify_to_digraph  # noqa: E402
 from routing.risk import assign_flood_risk, load_model_bundle  # noqa: E402
 
-SCRATCH = Path("/tmp/claude-0/-home-claude/28361c35-759c-54fc-9377-e0929e3128d3/scratchpad")
-FLOODMAP = Path(os.environ.get("FLOODMAP_DATA", SCRATCH / "fm" / "flood-map" / "data"))
+# Path to osm-in/flood-map/data at commit 5790681. Set FLOODMAP_DATA explicitly;
+# the default assumes a sibling checkout next to this repository.
+FLOODMAP = Path(os.environ.get("FLOODMAP_DATA", REPO.parent / "flood-map" / "data"))
+if not FLOODMAP.exists():
+    raise SystemExit(f"flood-map data not found at {FLOODMAP}; set FLOODMAP_DATA "
+                     "(git clone https://github.com/osm-in/flood-map && git checkout 5790681)")
 OUT = Path(__file__).resolve().parent / "out"
 OUT.mkdir(parents=True, exist_ok=True)
 UTM = "EPSG:32644"
+PAPER_WATERWAY_CACHE = ("6b73b1e75f93462296ded152463c77debfee5eef.json",
+                        "c5fb315317fef7d24928e9fd07a34d133b6256a4.json")
 SCENARIOS = {"moderate": (100.0, 2.0), "heavy": (200.0, 4.0), "extreme": (300.0, 6.0)}
 
 
 def cached_waterways():
     """Waterway polylines from the repository's committed Overpass cache."""
     lines = []
-    for f in sorted((REPO / "cache").glob("*.json")):
+    # Pin the exact Overpass responses used for the paper (9 Oct 2026, waterway-only
+    # query: 14 drains + 2 canals; the two files are identical queries). Globbing
+    # cache/*.json would silently pick up later responses (e.g. the 27 Oct 2026
+    # lakes/water query 2ec40626...), which changes every risk-based result.
+    names = os.environ.get("FLOODGUARD_WATERWAY_CACHE", ",".join(PAPER_WATERWAY_CACHE))
+    for f in [REPO / "cache" / n.strip() for n in names.split(",") if n.strip()]:
         d = json.load(open(f))
         if not isinstance(d, dict):
             continue

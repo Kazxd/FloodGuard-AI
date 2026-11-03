@@ -17,7 +17,10 @@ import pandas as pd
 from sklearn.base import clone
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, brier_score_loss, f1_score, roc_auc_score
+from sklearn.metrics import (accuracy_score, brier_score_loss, f1_score, precision_score,
+                             recall_score, roc_auc_score)
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import (GridSearchCV, RepeatedStratifiedKFold, StratifiedKFold,
                                      train_test_split)
 from sklearn.tree import DecisionTreeClassifier
@@ -38,8 +41,24 @@ def ece(y, p, bins=10):
 
 
 def slope(y, p):
+    return calib(y, p)[0]
+
+
+def calib(y, p):
+    """Calibration slope and intercept (logistic recalibration on the logit of p)."""
     lp = np.log(np.clip(p, 1e-6, 1 - 1e-6) / (1 - np.clip(p, 1e-6, 1 - 1e-6)))
-    return float(LogisticRegression(C=1e6).fit(lp.reshape(-1, 1), y).coef_[0, 0])
+    m = LogisticRegression(C=1e6).fit(lp.reshape(-1, 1), y)
+    return float(m.coef_[0, 0]), float(m.intercept_[0])
+
+
+def clf_metrics(y, p):
+    """Full row for Table III: threshold-0.5 metrics + probability metrics."""
+    yh = p >= .5
+    sl, ic = calib(y, p)
+    return {"auc": roc_auc_score(y, p), "acc": accuracy_score(y, yh),
+            "precision": precision_score(y, yh, zero_division=0), "recall": recall_score(y, yh),
+            "f1": f1_score(y, yh), "brier": brier_score_loss(y, p), "ece": ece(y, p),
+            "calib_slope": sl, "calib_intercept": ic}
 
 
 def boot(y, preds, B=2000):
@@ -71,18 +90,29 @@ def main():
         s = GridSearchCV(est, grid, scoring="f1", cv=cv, n_jobs=-1).fit(xtr, ytr)
         p = s.best_estimator_.predict_proba(xte)[:, 1]
         preds[name] = p
-        rep[name] = {"auc": roc_auc_score(yte_a, p), "acc": accuracy_score(yte_a, p >= .5),
-                     "f1": f1_score(yte_a, p >= .5), "brier": brier_score_loss(yte_a, p),
-                     "ece": ece(yte_a, p), "calib_slope": slope(yte_a, p),
+        rep[name] = {**clf_metrics(yte_a, p),
                      "rmse_to_true_prob": float(np.sqrt(np.mean((p - pte_a) ** 2)))}
     preds["Oracle"] = pte_a
-    rep["Oracle"] = {"auc": roc_auc_score(yte_a, pte_a), "acc": accuracy_score(yte_a, pte_a >= .5),
-                     "f1": f1_score(yte_a, pte_a >= .5), "brier": brier_score_loss(yte_a, pte_a),
-                     "ece": ece(yte_a, pte_a)}
-    lr = LogisticRegression(max_iter=2000).fit(xtr, ytr).predict_proba(xte)[:, 1]
+    # Oracle = sigma(eta) including the realised noise term epsilon of Eq. (1), which no
+    # model observes; it is an oracle reference for these test rows, not a ceiling for
+    # models trained on the observable features.
+    rep["Oracle"] = clf_metrics(yte_a, pte_a)
+    # Feature-level Bayes reference: E_eps[sigma(f(X) + eps)], eps ~ N(0, 0.5^2), i.e. the
+    # best probability any model of the observable features can output under Eq. (1).
+    from data.generate_dataset import ROAD_TYPE_EFFECT
+    dte = df.loc[xte.index]
+    f = (-4.0 + 0.012 * dte.rainfall_mm + 0.55 * dte.river_level_m * np.exp(-dte.distance_from_river_m / 500.0)
+         + 0.35 * dte.historical_flood_freq - 0.25 * (dte.elevation_m - 8.0)
+         + dte.road_type.map(ROAD_TYPE_EFFECT)).to_numpy()
+    gx, gw = np.polynomial.hermite_e.hermegauss(40)
+    pfb = (1 / (1 + np.exp(-(f[:, None] + 0.5 * gx[None, :]))) * (gw / gw.sum())).sum(axis=1)
+    preds["Feature-level Bayes"] = pfb
+    rep["Feature-level Bayes"] = clf_metrics(yte_a, pfb)
+    # Reference baseline (not a selection candidate): standardised features, default L2.
+    lr = make_pipeline(StandardScaler(), LogisticRegression(max_iter=2000)
+                       ).fit(xtr, ytr).predict_proba(xte)[:, 1]
     preds["Logistic regression"] = lr
-    rep["Logistic regression"] = {"auc": roc_auc_score(yte_a, lr), "brier": brier_score_loss(yte_a, lr),
-                                  "ece": ece(yte_a, lr),
+    rep["Logistic regression"] = {**clf_metrics(yte_a, lr),
                                   "rmse_to_true_prob": float(np.sqrt(np.mean((lr - pte_a) ** 2)))}
     rep["Prevalence"] = {"auc": 0.5, "brier": brier_score_loss(yte_a, np.full(len(yte_a), ytr.mean()))}
     ci, diff = boot(yte_a, preds)
@@ -116,9 +146,12 @@ def main():
     out["scenario_support"] = sup
     json.dump(out, open(OUT / "synthetic_stats.json", "w"), indent=2, default=float)
     # nested CV: selection inside the outer fold
-    outer = RepeatedStratifiedKFold(n_splits=5, n_repeats=int(os.environ.get("NESTED_REPEATS", "1")), random_state=RANDOM_SEED)
-    nested, chosen = [], []
-    for tr, te in outer.split(X, y):
+    # Outer folds as declared in the paper: StratifiedKFold(5) with seeds 42..42+R-1.
+    reps = int(os.environ.get("NESTED_REPEATS", "5"))
+    splits = [(r, tr, te) for r in range(reps)
+              for tr, te in StratifiedKFold(5, shuffle=True, random_state=RANDOM_SEED + r).split(X, y)]
+    nested, chosen, rep_id = [], [], []
+    for r, tr, te in splits:
         best, best_s, best_m = None, -1, None
         for name, (est, grid) in get_candidates().items():
             s = GridSearchCV(clone(est), grid, scoring="roc_auc",
@@ -129,9 +162,13 @@ def main():
         p = best_m.predict_proba(X.iloc[te])[:, 1]
         nested.append(roc_auc_score(y.iloc[te], p))
         chosen.append(best)
+        rep_id.append(r)
     out["nested_cv"] = {"auc_mean": float(np.mean(nested)), "auc_sd": float(np.std(nested, ddof=1)),
                         "auc_min_max": [float(min(nested)), float(max(nested))],
-                        "selected_counts": pd.Series(chosen).value_counts().to_dict()}
+                        "selected_counts": pd.Series(chosen).value_counts().to_dict(),
+                        "outer_seeds": [RANDOM_SEED + r for r in range(reps)],
+                        "per_repeat_mean": pd.Series(nested).groupby(rep_id).mean().tolist(),
+                        "per_fold_auc": nested}
 
     json.dump(out, open(OUT / "synthetic_stats.json", "w"), indent=2, default=float)
     print(json.dumps(out, indent=1, default=float))
